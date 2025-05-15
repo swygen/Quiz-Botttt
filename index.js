@@ -145,7 +145,7 @@ bot.on('text', async (ctx) => {
   }
 
   if (input === '📤 Share') {
-    return ctx.reply('আমি একটি মজার কুইজ বট ব্যবহার করছি! দেখুন: https://t.me/your_bot_username');
+    return ctx.reply('আমি একটি মজার কুইজ বট ব্যবহার করছি! দেখুন: https://t.me/Quiz_Learn_BD_bot');
   }
 
   const q = state.questions[state.currentQuestion];
