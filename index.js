@@ -1,10 +1,18 @@
+import express from 'express';
 import { Telegraf, Markup } from 'telegraf';
 import { BOT_TOKEN, GROUP_ID, GROUP_LINK } from './config.js';
 import quiz from './quiz.json' assert { type: 'json' };
 
+// === Keep Alive Server ===
+const app = express();
+app.get('/', (req, res) => res.send('Bot is alive!'));
+app.listen(3000, () => console.log('✅ Keep-alive server running on port 3000'));
+
+// === Telegram Bot ===
 const bot = new Telegraf(BOT_TOKEN);
 const userState = {};
 
+// Start command
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = {
@@ -24,25 +32,27 @@ bot.start(async (ctx) => {
   );
 });
 
+// Join Check
 bot.action('check_join', async (ctx) => {
   const userId = ctx.from.id;
   try {
     const member = await ctx.telegram.getChatMember(GROUP_ID, userId);
     if (['member', 'creator', 'administrator'].includes(member.status)) {
       userState[userId].joined = true;
-      await ctx.editMessageText('গ্রুপে জয়েন নিশ্চিত ✅ নিচের মেনু থেকে বেছে নিন:');
+      await ctx.editMessageText('✅ গ্রুপে জয়েন নিশ্চিত! নিচের মেনু থেকে বেছে নিন:');
       await showMainMenu(ctx);
     } else {
-      await ctx.answerCbQuery('গ্রুপে জয়েন করুন আগে!', { show_alert: true });
+      await ctx.answerCbQuery('⚠️ আগে গ্রুপে জয়েন করুন!', { show_alert: true });
     }
   } catch {
     await ctx.reply('গ্রুপ যাচাই করা যাচ্ছে না। আবার চেষ্টা করুন।');
   }
 });
 
+// Show menu
 async function showMainMenu(ctx) {
   await ctx.reply(
-    'মেনু থেকে আপনার পছন্দ বেছে নিন:',
+    'মেনু থেকে একটি অপশন বেছে নিন:',
     Markup.keyboard([
       ['🧠 Start Quiz'],
       ['👤 Profile', '⭐ Feedback'],
@@ -51,6 +61,7 @@ async function showMainMenu(ctx) {
   );
 }
 
+// Start Quiz
 bot.hears('🧠 Start Quiz', async (ctx) => {
   const userId = ctx.from.id;
   userState[userId].score = 0;
@@ -59,6 +70,7 @@ bot.hears('🧠 Start Quiz', async (ctx) => {
   await sendQuestion(ctx, userId);
 });
 
+// Quiz Sender
 async function sendQuestion(ctx, userId) {
   const state = userState[userId];
   const q = state.questions[state.currentQuestion];
@@ -69,11 +81,12 @@ async function sendQuestion(ctx, userId) {
   }
 
   await ctx.reply(
-    `বিষয়: ${q.subject}\n\nপ্রশ্ন ${state.currentQuestion + 1}:\n${q.question}`,
+    `বিষয়: ${q.subject}\n\nপ্রশ্ন ${state.currentQuestion + 1}:\n${q.question}`,
     Markup.keyboard(q.options.map(opt => [opt])).oneTime().resize()
   );
 }
 
+// Handle Answers & Menu
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
   const input = ctx.message.text;
@@ -81,11 +94,10 @@ bot.on('text', async (ctx) => {
 
   if (!state || !state.joined) return;
 
-  // Handle Feedback
   if (state.waitingFeedback) {
     state.feedback.push(input);
     state.waitingFeedback = false;
-    return ctx.reply('ধন্যবাদ আপনার মতামতের জন্য!');
+    return ctx.reply('✅ ধন্যবাদ আপনার মতামতের জন্য!');
   }
 
   switch (input) {
@@ -93,14 +105,13 @@ bot.on('text', async (ctx) => {
       return ctx.reply(`নাম: ${ctx.from.first_name}\nস্কোর: ${state.score}/${state.questions.length}`);
     case '⭐ Feedback':
       state.waitingFeedback = true;
-      return ctx.reply('আমাদের বট কেমন লেগেছে? আপনার মতামত লিখে পাঠান:');
+      return ctx.reply('আমাদের বট সম্পর্কে আপনার মতামত লিখুন:');
     case '📤 Share':
       return ctx.reply(
         `আমি দারুণ একটা কুইজ বট পেয়েছি! চেষ্টা করে দেখো:\n👉 https://t.me/your_bot_username`
       );
   }
 
-  // Handle Quiz Answer
   const q = state.questions[state.currentQuestion];
   if (!q) return;
 
