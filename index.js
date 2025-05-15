@@ -1,18 +1,17 @@
+// index.js
 import express from 'express';
 import { Telegraf, Markup } from 'telegraf';
 import { BOT_TOKEN, GROUP_ID, GROUP_LINK } from './config.js';
 import quiz from './quiz.json' assert { type: 'json' };
 
-// === Keep Alive Server ===
 const app = express();
 app.get('/', (req, res) => res.send('Bot is alive!'));
 app.listen(3000, () => console.log('✅ Keep-alive server running on port 3000'));
 
-// === Telegram Bot ===
 const bot = new Telegraf(BOT_TOKEN);
 const userState = {};
 
-// Start command
+// Start
 bot.start(async (ctx) => {
   const userId = ctx.from.id;
   userState[userId] = {
@@ -20,11 +19,14 @@ bot.start(async (ctx) => {
     currentQuestion: 0,
     joined: false,
     feedback: [],
-    questions: shuffleArray(quiz)
+    questions: shuffleArray(quiz),
+    timeoutId: null,
+    waitingFeedback: false,
+    lastMessageId: null
   };
 
   await ctx.reply(
-    `স্বাগতম ${ctx.from.first_name}!\n\nএই কুইজ বট ব্যবহার করতে আগে আমাদের গ্রুপে জয়েন করুন:`,
+    `স্বাগতম ${ctx.from.first_name}! এই কুইজ বট ব্যবহারের আগে গ্রুপে জয়েন করুন:`,
     Markup.inlineKeyboard([
       Markup.button.url('গ্রুপে যাও', GROUP_LINK),
       Markup.button.callback('✅ Joined', 'check_join')
@@ -32,24 +34,24 @@ bot.start(async (ctx) => {
   );
 });
 
-// Join Check
+// Group Check
 bot.action('check_join', async (ctx) => {
   const userId = ctx.from.id;
   try {
     const member = await ctx.telegram.getChatMember(GROUP_ID, userId);
-    if (['member', 'creator', 'administrator'].includes(member.status)) {
+    if (["member", "administrator", "creator"].includes(member.status)) {
       userState[userId].joined = true;
-      await ctx.editMessageText('✅ গ্রুপে জয়েন নিশ্চিত! নিচের মেনু থেকে বেছে নিন:');
-      await showMainMenu(ctx);
+      await ctx.editMessageText('✅ গ্রুপে জয়েন নিশ্চিত! মেনু দেখুন:');
+      return showMainMenu(ctx);
     } else {
-      await ctx.answerCbQuery('⚠️ আগে গ্রুপে জয়েন করুন!', { show_alert: true });
+      return ctx.answerCbQuery('⚠️ আগে গ্রুপে জয়েন করুন!', { show_alert: true });
     }
   } catch {
-    await ctx.reply('গ্রুপ যাচাই করা যাচ্ছে না। আবার চেষ্টা করুন।');
+    return ctx.reply('গ্রুপ যাচাই করা যায়নি, আবার চেষ্টা করুন।');
   }
 });
 
-// Show menu
+// Show Main Menu
 async function showMainMenu(ctx) {
   await ctx.reply(
     'মেনু থেকে একটি অপশন বেছে নিন:',
@@ -64,13 +66,16 @@ async function showMainMenu(ctx) {
 // Start Quiz
 bot.hears('🧠 Start Quiz', async (ctx) => {
   const userId = ctx.from.id;
-  userState[userId].score = 0;
-  userState[userId].currentQuestion = 0;
-  userState[userId].questions = shuffleArray(quiz);
+  const state = userState[userId];
+  if (!state || !state.joined) return;
+
+  state.score = 0;
+  state.currentQuestion = 0;
+  state.questions = shuffleArray(quiz);
   await sendQuestion(ctx, userId);
 });
 
-// Quiz Sender
+// Send Question with Timer
 async function sendQuestion(ctx, userId) {
   const state = userState[userId];
   const q = state.questions[state.currentQuestion];
@@ -80,17 +85,47 @@ async function sendQuestion(ctx, userId) {
     return showMainMenu(ctx);
   }
 
-  await ctx.reply(
-    `বিষয়: ${q.subject}\n\nপ্রশ্ন ${state.currentQuestion + 1}:\n${q.question}`,
+  let seconds = 60;
+
+  const sent = await ctx.reply(
+    `⏳ সময় বাকি: 60s\n\nপ্রশ্ন: ${q.question}\nবিষয়: ${q.subject}`,
     Markup.keyboard(q.options.map(opt => [opt])).oneTime().resize()
   );
+  state.lastMessageId = sent.message_id;
+
+  const countdown = setInterval(async () => {
+    seconds -= 10;
+    if (seconds <= 0) return clearInterval(countdown);
+    try {
+      await ctx.telegram.editMessageText(
+        ctx.chat.id,
+        state.lastMessageId,
+        null,
+        `⏳ সময় বাকি: ${seconds}s\n\nপ্রশ্ন: ${q.question}\nবিষয়: ${q.subject}`,
+        {
+          reply_markup: {
+            keyboard: q.options.map(opt => [opt]),
+            resize_keyboard: true,
+            one_time_keyboard: true
+          }
+        }
+      );
+    } catch {}
+  }, 10000);
+
+  state.timeoutId = setTimeout(async () => {
+    clearInterval(countdown);
+    await ctx.reply(`⏰ সময় শেষ!\nসঠিক উত্তর: ${q.answer}`);
+    state.currentQuestion++;
+    setTimeout(() => sendQuestion(ctx, userId), 3000);
+  }, 60000);
 }
 
-// Handle Answers & Menu
+// Handle Answers and Feedback
 bot.on('text', async (ctx) => {
   const userId = ctx.from.id;
-  const input = ctx.message.text;
   const state = userState[userId];
+  const input = ctx.message.text;
 
   if (!state || !state.joined) return;
 
@@ -100,34 +135,38 @@ bot.on('text', async (ctx) => {
     return ctx.reply('✅ ধন্যবাদ আপনার মতামতের জন্য!');
   }
 
-  switch (input) {
-    case '👤 Profile':
-      return ctx.reply(`নাম: ${ctx.from.first_name}\nস্কোর: ${state.score}/${state.questions.length}`);
-    case '⭐ Feedback':
-      state.waitingFeedback = true;
-      return ctx.reply('আমাদের বট সম্পর্কে আপনার মতামত লিখুন:');
-    case '📤 Share':
-      return ctx.reply(
-        `আমি দারুণ একটা কুইজ বট পেয়েছি! চেষ্টা করে দেখো:\n👉 https://t.me/your_bot_username`
-      );
+  if (input === '👤 Profile') {
+    return ctx.reply(`নাম: ${ctx.from.first_name}\nস্কোর: ${state.score}/${state.questions.length}`);
+  }
+
+  if (input === '⭐ Feedback') {
+    state.waitingFeedback = true;
+    return ctx.reply('আপনার মতামত লিখুন:');
+  }
+
+  if (input === '📤 Share') {
+    return ctx.reply('আমি একটি মজার কুইজ বট ব্যবহার করছি! দেখুন: https://t.me/your_bot_username');
   }
 
   const q = state.questions[state.currentQuestion];
   if (!q) return;
 
+  clearTimeout(state.timeoutId);
+
   if (input === q.answer) {
     state.score++;
-    await ctx.reply('সঠিক উত্তর! ✅');
+    await ctx.reply('✅ অভিনন্দন! সঠিক উত্তর!');
   } else {
-    await ctx.reply(`ভুল উত্তর ❌\nসঠিক উত্তর: ${q.answer}`);
+    await ctx.reply(`❌ ভুল উত্তর! সঠিক উত্তর: ${q.answer}`);
   }
 
   state.currentQuestion++;
-  await sendQuestion(ctx, userId);
+  setTimeout(() => sendQuestion(ctx, userId), 5000);
 });
 
-function shuffleArray(arr) {
-  return arr.sort(() => Math.random() - 0.5);
+// Shuffle Utility
+function shuffleArray(array) {
+  return array.sort(() => Math.random() - 0.5);
 }
 
 bot.launch();
